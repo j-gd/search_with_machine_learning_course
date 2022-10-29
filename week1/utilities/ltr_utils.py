@@ -76,13 +76,12 @@ def create_feature_log_query(query, doc_ids, click_prior_query, featureset_name,
     ##### Step 3.b:
     # print("IMPLEMENT ME: create_feature_log_query")
     query_obj = {
-            "window_size": size,
             'query': {
                 'bool': {
                     "filter": [  # use a filter so that we don't actually score anything
                         {
                             "terms": {
-                                terms_field: doc_ids
+                                terms_field: doc_ids[: size]
                             }
                         },
                         {  # use the LTR query bring in the LTR feature set
