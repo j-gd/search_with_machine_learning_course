@@ -244,21 +244,31 @@ class DataPrepper:
         feature_results["doc_id"] = []  # capture the doc id so we can join later
         feature_results["query_id"] = []  # ^^^
         feature_results["sku"] = []
-        feature_results["name_match"] = []
+        # feature_results["name_match"] = []
 
-        if response and len(response['hits']) > 0:
+        if response and response.get('hits', None) != None and response['hits'].get('hits', None) != None:
             for hit in response['hits']['hits']:
                 feature_results["doc_id"].append(hit['_source']['productId'][0])  
                 feature_results["query_id"].append(query_id)
-                feature_results["sku"].append(hit['_id'])  # sku is the key
-                log_entries = hit['fields']['_ltrlog'][0]['log_entry']
-                if len(log_entries) > 0:
-                    val = log_entries[0].get('value', 0)
-                else:
-                    val = 0
-                feature_results["name_match"].append(val)
+                feature_results["sku"].append(hit['_source']['sku'][0])
+                for log_entry in hit['fields']['_ltrlog'][0]['log_entry']:
+                    name  = log_entry.get('name' , '')
+                    value = log_entry.get('value', 0)
+                    if name != '':
+                        if name in feature_results.keys():
+                            feature_results[name].append(value)
+                        else:
+                            feature_results[name] = [value]
+                    else:
+                        print("JGD: Unexpected: name missing from log_entry")
+        else:
+            for doc_id in query_doc_ids:
+                feature_results["doc_id"].append(doc_id)  # capture the doc id so we can join later
+                feature_results["query_id"].append(query_id)
+                feature_results["sku"].append(doc_id) 
+
         frame = pd.DataFrame(feature_results)
-        return frame.astype({'doc_id': 'int64', 'query_id': 'int64', 'sku': 'int64', 'name_match': 'float64'})
+        return frame.astype({'doc_id': 'int64', 'query_id': 'int64', 'sku': 'int64'})
         # IMPLEMENT_END
 
     # Can try out normalizing data, but for XGb, you really don't have to since it is just finding splits
