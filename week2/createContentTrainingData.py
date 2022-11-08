@@ -56,7 +56,18 @@ def _label_filename(filename):
               # Replace newline chars with spaces so fastText doesn't complain
               name = child.find('name').text.replace('\n', ' ')
               labels.append((cat, transform_name(name)))
-    return labels
+    
+    # only output if above the min
+    counts = {}
+    for cat, _ in labels:
+        if cat in counts: counts[cat] += 1
+        else: counts[cat] = 1
+    filtered_labels = []
+    for cat, name in labels:
+        if cat in counts and counts[cat] >= min_products:
+            filtered_labels.append((cat, name))
+
+    return filtered_labels
 
 if __name__ == '__main__':
     files = glob.glob(f'{directory}/*.xml')
