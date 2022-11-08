@@ -32,6 +32,9 @@ if os.path.isdir(output_dir) == False:
 if args.input:
     directory = args.input
 # IMPLEMENT: Track the number of items in each category and only output if above the min
+#
+# J-G note: I implemented the filtering in a post-processing step in ./filterLabels.py
+#
 min_products = args.min_products
 names_as_labels = False
 if args.label == 'name':

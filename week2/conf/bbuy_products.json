@@ -36,6 +36,7 @@
         "my_snow": {
           "type": "snowball",
           "language": "English"
+        }
       }
     }
   },
