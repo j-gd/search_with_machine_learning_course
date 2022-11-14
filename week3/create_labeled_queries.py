@@ -5,15 +5,13 @@ import pandas as pd
 import numpy as np
 import csv
 import re
-
-# Useful if you want to perform stemming.
 import nltk
 stemmer = nltk.stem.PorterStemmer()
 
 categories_file_name = r'/workspace/datasets/product_data/categories/categories_0001_abcat0010000_to_pcmcat99300050000.xml'
 
 queries_file_name = r'/workspace/datasets/train.csv'
-output_file_name = r'/workspace/datasets/fasttext/labeled_queries_counts.txt'
+output_file_name = r'/workspace/datasets/fasttext/labeled_queries.txt'
 
 min_queries = 1
 
@@ -67,14 +65,63 @@ def normalize(query):
 queries_df['query'] = queries_df['query'].apply(normalize)
 
 # IMPLEMENT ME: Roll up categories to ancestors to satisfy the minimum number of queries per category.
-all_counts = queries_df.groupby('category').size().reset_index(name='count').to_csv(output_file_name, header=False, sep='|', escapechar='\\', quoting=csv.QUOTE_NONE, index=False)
-exit()
-# enough_counts = all_counts[all_counts[0] > min_queries]
+#
+# Implementation: roll up only the leaves, then prune the leaves, and repeat
+# This is to avoid rolling up non-leaves that won't need to be rolled up once their leaves are rolled up
+#
+all_counts = queries_df.groupby('category').size().reset_index(name='rollup_count')
+all_counts['rolledup_categories'] = all_counts[['category']].values.tolist()
+enough_counts = pd.DataFrame()
+full = pd.merge(parents_df, all_counts)
 
-# Create labels in fastText format.
-queries_df['label'] = '__label__' + queries_df['category']
+def combineLists(l1, l2, c2):
+  if c2 > 0: return l1.extend(l2)
+  else: return l1
 
-# Output labeled query data as a space-separated file, making sure that every category is in the taxonomy.
-queries_df = queries_df[queries_df['category'].isin(categories)]
-queries_df['output'] = queries_df['label'] + ' ' + queries_df['query']
-queries_df[['output']].to_csv(output_file_name, header=False, sep='|', escapechar='\\', quoting=csv.QUOTE_NONE, index=False)
+while True:
+  # find leaves among rollups
+  leaves = full[~full['category'].isin(full['parent'].values)]
+  trunc  = full[full['category'].isin(full['parent'].values)]
+
+  leaves_enough_counts = leaves[leaves['rollup_count'] >= min_queries]
+  if len(leaves_enough_counts) > 0:
+    enough_counts = pd.concat([enough_counts, leaves_enough_counts])
+  leaves_to_rollup = leaves[leaves['rollup_count'] < min_queries]
+  # print(f"Enough counts size: {len(enough_counts)}   Trunc size: {len(trunc)}    Leaves to rollup: {len(leaves_to_rollup)}")
+
+  if len(trunc) > 0 and len(leaves_to_rollup) > 0:
+    full = pd.merge(trunc, leaves_to_rollup, left_on='category', right_on='parent', how='left').drop(['category_y','parent_y'], axis=1) \
+    .rename(columns={'category_x': 'category', 'parent_x': 'parent'})
+    full['rollup_count_y'] = full['rollup_count_y'].fillna(0)
+    full['rollup_count'] = full['rollup_count_x'] + full['rollup_count_y']
+    full.apply(lambda x: combineLists(x.rolledup_categories_x, x.rolledup_categories_y, x.rollup_count_y), axis=1)
+    full.drop(['rollup_count_x','rollup_count_y','rolledup_categories_y'], axis=1, inplace=True)
+    full = full.rename(columns={'rolledup_categories_x': 'rolledup_categories'})
+  elif len(leaves_to_rollup) > 0:
+    enough_counts = pd.concat([enough_counts, leaves_to_rollup]) # if not enough counts in whole tree
+    break
+  else:
+    break
+
+print("out of while")
+
+# Explode hangs, so do it in batches
+os.remove(output_file_name)
+batchSz = 2
+count = -(len(enough_counts) // -batchSz)
+for i in range(count):
+  # print("before explode")
+  enough_counts2 = enough_counts.iloc[i*batchSz:(i+1)*batchSz].explode("rolledup_categories")
+  # print("after explode")
+  queries_df2 = pd.merge(queries_df, enough_counts2, left_on='category', right_on='rolledup_categories')
+  queries_df2 = queries_df2[['category_y', 'query']].rename(columns={'category_y': 'category'})
+
+  # Create labels in fastText format.
+  queries_df2['label'] = '__label__' + queries_df2['category']
+
+  # Output labeled query data as a space-separated file, making sure that every category is in the taxonomy.
+  queries_df2 = queries_df2[queries_df2['category'].isin(categories)]
+  queries_df2['output'] = queries_df2['label'] + ' ' + queries_df2['query']
+  print(f"Output count: {len(queries_df2)}")
+  queries_df2[['output']].to_csv(output_file_name, header=False, sep='|', escapechar='\\', mode='a', quoting=csv.QUOTE_NONE, index=False)
+  print(f"Wrote batch {i}\n")
