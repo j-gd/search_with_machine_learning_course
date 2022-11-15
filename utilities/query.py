@@ -12,7 +12,10 @@ import pandas as pd
 # import fileinput
 import logging
 import sys
-
+import fasttext
+import re
+import nltk
+stemmer = nltk.stem.PorterStemmer()
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -50,7 +53,7 @@ def create_prior_queries(doc_ids, doc_id_weights,
 
 
 # Hardcoded query here.  Better to use search templates or other query config.
-def create_query(user_query, click_prior_query, filters, sort="_score", sortDir="desc", size=10, source=None, synonyms=False):
+def create_query(user_query, click_prior_query, filters, boosters, sort="_score", sortDir="desc", size=10, source=None, synonyms=False):
     nameField = "name"
     if synonyms:
         nameField = "name.synonyms"
@@ -179,6 +182,9 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
                 "fields": ["_id"]
             }
         })
+    if len(boosters) > 0:
+        query_obj["query"]["function_score"]["query"]["bool"]["should"].extend(boosters)
+    
     if user_query == "*" or user_query == "#":
         # replace the bool
         try:
@@ -189,15 +195,62 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
         query_obj["_source"] = source
     return query_obj
 
+def normalize(query):
+  # Convert all letters to lowercase.
+  low = query.lower()
+  # Treat any character that is not a number or letter as a space.
+  spaces = re.sub('[\W_]', ' ', low)
+  words = spaces.split(' ')
+  # Trim multiple spaces (which may result from previous step) to a single space.
+  noSpace = [word for word in words if len(word) > 0]
+  # Use the nltk stemmer to stem all query tokens.
+  stems = [stemmer.stem(word) for word in noSpace]
+  return ' '.join(stems)
 
-def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", synonyms=False):
+def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", synonyms=False, boostNotFilter=False):
     #### W3: classify the query
-    #### W3: create filters and boosts
-    # Note: you may also want to modify the `create_query` method above
+    threshold = 0.5 # Cumulative threshold of category scores
+    k = 3           # Needs to be big enough to always get scores sum to the threshold
 
-    query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir, source=["name", "shortDescription"], synonyms=synonyms)
+    model = fasttext.load_model('/workspace/datasets/fasttext/classifier.bin')
+    normed = normalize(user_query)
+    print(f"Normalized query: {normed}")
+    pred = model.predict(normed, k = k)
+
+    total_score = 0
+    categories = []
+    for category, score in zip(pred[0], pred[1]):
+        total_score += score
+        categories.append(category[9:])
+        print(category, score)
+        if total_score >= threshold: break
+    print(f"Result: score: {total_score} Categories: {categories}")
+
+    #### W3: create filters and boosts
+    filters = []
+    boosters = []
+    if len(categories) > 0:
+        if boostNotFilter:
+            cat_boost = {
+                "terms": {
+                    "categoryPathIds.keyword": categories,
+                    "boost": 100.0
+                }
+            }
+            boosters.append(cat_boost)
+        else:
+            cat_filter = {
+                "terms": {
+                    "categoryPathIds.keyword": categories
+                }
+            }
+            filters.append(cat_filter)
+    # sort = "salePrice"
+
+    query_obj = create_query(user_query, click_prior_query=None, filters=filters, boosters=boosters, sort=sort, sortDir=sortDir, source=["name", "shortDescription"], synonyms=synonyms)
     logging.info(query_obj)
     response = client.search(query_obj, index=index)
+
     if response and response['hits']['hits'] and len(response['hits']['hits']) > 0:
         hits = response['hits']['hits']
         print(json.dumps(response, indent=2))
@@ -217,8 +270,9 @@ if __name__ == "__main__":
                          help='The OpenSearch port')
     general.add_argument('--user',
                          help='The OpenSearch admin.  If this is set, the program will prompt for password too. If not set, use default of admin/admin')
-    general.add_argument('--synonyms', type=bool, default=False,
-                        help='Optional flag to also use synonyms')
+    general.add_argument('--synonyms', type=bool, default=False, help='Optional flag to also use synonyms')
+    general.add_argument('--boost_categories', action=argparse.BooleanOptionalAction, help='Optional flag to also use synonyms')
+
 
     args = parser.parse_args()
 
@@ -232,6 +286,8 @@ if __name__ == "__main__":
         password = getpass()
         auth = (args.user, password)
     synonyms = args.synonyms
+    boostNotFilter = False
+    if args.boost_categories: boostNotFilter = True
 
     base_url = "https://{}:{}/".format(host, port)
     opensearch = OpenSearch(
@@ -254,7 +310,7 @@ if __name__ == "__main__":
         query = line.rstrip()
         if query == "Exit":
             break
-        search(client=opensearch, user_query=query, index=index_name, synonyms=synonyms)
+        search(client=opensearch, user_query=query, index=index_name, synonyms=synonyms, boostNotFilter=boostNotFilter)
 
         print(query_prompt)
 
