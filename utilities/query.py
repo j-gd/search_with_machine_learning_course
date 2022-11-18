@@ -14,12 +14,31 @@ import logging
 import sys
 import fasttext
 import re
+from sentence_transformers import SentenceTransformer, util
 import nltk
 stemmer = nltk.stem.PorterStemmer()
+print("Loading model...")
+model = SentenceTransformer('all-MiniLM-L6-v2')
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logging.basicConfig(format='%(levelname)s:%(message)s')
+
+def create_vector_query(query, k):
+    queryArr = [query]
+    embedding = model.encode(queryArr)[0]
+    query_obj = {
+        "size": k,
+        "query": {
+            "knn": {
+                "embedding": {
+                    "vector": embedding,
+                    "k": k
+                }
+            }
+        }
+    }
+    return query_obj
 
 # expects clicks and impressions to be in the row
 def create_prior_queries_from_group(
@@ -207,53 +226,62 @@ def normalize(query):
   stems = [stemmer.stem(word) for word in noSpace]
   return ' '.join(stems)
 
-def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", synonyms=False, boostNotFilter=False):
-    #### W3: classify the query
-    threshold = 0.5 # Cumulative threshold of category scores
-    k = 3           # Needs to be big enough to always get scores sum to the threshold
+def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", synonyms=False, boostNotFilter=False, useVector=False):
+    if useVector:
+        k = 10
+        query_obj = create_vector_query(user_query, k)
 
-    model = fasttext.load_model('/workspace/datasets/fasttext/classifier.bin')
-    normed = normalize(user_query)
-    print(f"Normalized query: {normed}")
-    pred = model.predict(normed, k = k)
+    else:
+        #### W3: classify the query
+        threshold = 0.5 # Cumulative threshold of category scores
+        k = 3           # Needs to be big enough to always get scores sum to the threshold
 
-    total_score = 0
-    categories = []
-    for category, score in zip(pred[0], pred[1]):
-        total_score += score
-        categories.append(category[9:])
-        print(category, score)
-        if total_score >= threshold: break
-    print(f"Result: score: {total_score} Categories: {categories}")
+        model = fasttext.load_model('/workspace/datasets/fasttext/classifier.bin')
+        normed = normalize(user_query)
+        # print(f"Normalized query: {normed}")
+        pred = model.predict(normed, k = k)
 
-    #### W3: create filters and boosts
-    filters = []
-    boosters = []
-    if len(categories) > 0:
-        if boostNotFilter:
-            cat_boost = {
-                "terms": {
-                    "categoryPathIds.keyword": categories,
-                    "boost": 100.0
+        total_score = 0
+        categories = []
+        for category, score in zip(pred[0], pred[1]):
+            total_score += score
+            categories.append(category[9:])
+            # print(category, score)
+            if total_score >= threshold: break
+        # print(f"Result: score: {total_score} Categories: {categories}")
+
+        #### W3: create filters and boosts
+        filters = []
+        boosters = []
+        if len(categories) > 0:
+            if boostNotFilter:
+                cat_boost = {
+                    "terms": {
+                        "categoryPathIds.keyword": categories,
+                        "boost": 100.0
+                    }
                 }
-            }
-            boosters.append(cat_boost)
-        else:
-            cat_filter = {
-                "terms": {
-                    "categoryPathIds.keyword": categories
+                boosters.append(cat_boost)
+            else:
+                cat_filter = {
+                    "terms": {
+                        "categoryPathIds.keyword": categories
+                    }
                 }
-            }
-            filters.append(cat_filter)
-    # sort = "salePrice"
+                filters.append(cat_filter)
+        # sort = "salePrice"
+        query_obj = create_query(user_query, click_prior_query=None, filters=filters, boosters=boosters, sort=sort, sortDir=sortDir, source=["name", "shortDescription"], synonyms=synonyms)
 
-    query_obj = create_query(user_query, click_prior_query=None, filters=filters, boosters=boosters, sort=sort, sortDir=sortDir, source=["name", "shortDescription"], synonyms=synonyms)
     logging.info(query_obj)
     response = client.search(query_obj, index=index)
 
     if response and response['hits']['hits'] and len(response['hits']['hits']) > 0:
         hits = response['hits']['hits']
-        print(json.dumps(response, indent=2))
+        for hit in hits:
+            print(f"Product: {hit['_source']['name']}")
+            print(f"Score: {hit['_score']}\n")
+
+        # print(json.dumps(response, indent=2))
 
 
 if __name__ == "__main__":
@@ -272,7 +300,7 @@ if __name__ == "__main__":
                          help='The OpenSearch admin.  If this is set, the program will prompt for password too. If not set, use default of admin/admin')
     general.add_argument('--synonyms', type=bool, default=False, help='Optional flag to also use synonyms')
     general.add_argument('--boost_categories', action=argparse.BooleanOptionalAction, help='Optional flag to also use synonyms')
-
+    general.add_argument('--vector', action=argparse.BooleanOptionalAction, help='Optional flag to use vector search')
 
     args = parser.parse_args()
 
@@ -288,6 +316,8 @@ if __name__ == "__main__":
     synonyms = args.synonyms
     boostNotFilter = False
     if args.boost_categories: boostNotFilter = True
+    useVector = False
+    if args.vector: useVector = True
 
     base_url = "https://{}:{}/".format(host, port)
     opensearch = OpenSearch(
@@ -310,7 +340,7 @@ if __name__ == "__main__":
         query = line.rstrip()
         if query == "Exit":
             break
-        search(client=opensearch, user_query=query, index=index_name, synonyms=synonyms, boostNotFilter=boostNotFilter)
+        search(client=opensearch, user_query=query, index=index_name, synonyms=synonyms, boostNotFilter=boostNotFilter, useVector=useVector)
 
         print(query_prompt)
 
