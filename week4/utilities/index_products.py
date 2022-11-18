@@ -21,6 +21,7 @@ logger.setLevel(logging.INFO)
 logging.basicConfig(format='%(levelname)s:%(message)s')
 
 # IMPLEMENT ME: import the sentence transformers module!
+from sentence_transformers import SentenceTransformer, util
 
 # NOTE: this is not a complete list of fields.  If you wish to add more, put in the appropriate XPath expression.
 #TODO: is there a way to do this using XPath/XSL Functions so that we don't have to maintain a big list?
@@ -107,7 +108,7 @@ def get_opensearch():
 def index_file(file, index_name, reduced=False):
     logger.info("Creating Model")
     # IMPLEMENT ME: instantiate the sentence transformer model!
-    
+    model = SentenceTransformer('all-MiniLM-L6-v2')
     logger.info("Ready to index")
 
     docs_indexed = 0
@@ -129,7 +130,8 @@ def index_file(file, index_name, reduced=False):
             xpath_expr = mappings[idx]
             key = mappings[idx + 1]
             doc[key] = child.xpath(xpath_expr)
-        #print(doc)
+        # print(doc) # {'productId': ['1051806942127'], 'sku': ['2570'], 'name': ['Fuji - 110...
+
         if 'productId' not in doc or len(doc['productId']) == 0:
             continue
         if 'name' not in doc or len(doc['name']) == 0:
@@ -137,10 +139,16 @@ def index_file(file, index_name, reduced=False):
         if reduced and ('categoryPath' not in doc or 'Best Buy' not in doc['categoryPath'] or 'Movies & Music' in doc['categoryPath']):
             continue
         docs.append({'_index': index_name, '_id':doc['sku'][0], '_source' : doc})
+        names.append(doc['name'][0])
         #docs.append({'_index': index_name, '_source': doc})
         docs_indexed += 1
-        if docs_indexed % 200 == 0:
+        if docs_indexed % 200 == 0: # 200 debug
+            logger.info("embedding")
+            embeddings = model.encode(names)
+            for idx in range(len(docs)): docs[idx]['_source']['embedding'] = embeddings[idx]
             logger.info("Indexing")
+            # print(docs[0]) # debug
+            # exit()
             bulk(client, docs, request_timeout=60)
             logger.info(f'{docs_indexed} documents indexed')
             docs = []

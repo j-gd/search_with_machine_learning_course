@@ -1,0 +1,1 @@
+python index_products.py -s /workspace/datasets/product_data/products
